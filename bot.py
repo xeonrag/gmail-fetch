@@ -350,6 +350,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK - Gmail Bot is alive\n")
+
+    def log_message(self, format, *args):
+        # Silence default HTTP access logs to keep terminal clean
+        return
+
+
+def start_health_server():
+    """Start dummy HTTP server for Render port binding health checks."""
+    port_str = os.getenv("PORT")
+    if port_str:
+        try:
+            port = int(port_str)
+            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            logger.info(f"Health check HTTP server listening on port {port} (Render compatible)")
+        except Exception as e:
+            logger.warning(f"Could not start health check server on port {port_str}: {e}")
+
+
 def main():
     """Start the Telegram bot."""
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
@@ -359,6 +389,9 @@ def main():
         print("BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ")
         print("=" * 60 + "\n")
         return
+
+    # Start health check server if on Render/Cloud environment with PORT
+    start_health_server()
 
     print("🚀 Starting Gmail OSINT Telegram Bot...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
