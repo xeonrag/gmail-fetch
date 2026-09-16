@@ -380,6 +380,18 @@ def start_health_server():
             logger.warning(f"Could not start health check server on port {port_str}: {e}")
 
 
+async def keep_alive_ping():
+    """Periodically ping API to keep Render instance awake."""
+    while True:
+        try:
+            await asyncio.sleep(600)  # Ping every 10 minutes
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get("https://fetch-ykhk.onrender.com/")
+                logger.info(f"Keep-alive ping sent to API (Status: {r.status_code})")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping error: {e}")
+
+
 def main():
     """Start the Telegram bot."""
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
@@ -395,6 +407,16 @@ def main():
 
     print("🚀 Starting Gmail OSINT Telegram Bot...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Schedule background keep-alive task in job queue
+    if app.job_queue:
+        async def job_keep_alive(ctx):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    await client.get("https://fetch-ykhk.onrender.com/")
+            except Exception:
+                pass
+        app.job_queue.run_repeating(job_keep_alive, interval=600, first=60)
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
