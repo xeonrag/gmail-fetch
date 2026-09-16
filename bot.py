@@ -53,15 +53,8 @@ async def schedule_auto_delete(chat_id: int, message_ids: list[int], delay: int,
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message on /start."""
     user = update.effective_user
-    welcome_text = (
-        f"👋 <b>Hello {html.escape(user.first_name if user else 'User')}!</b>\n\n"
-        "🔍 <b>Gmail OSINT & Profile Info Bot</b>\n\n"
-        "Simply send me any <b>Gmail address</b> (e.g., <code>example@gmail.com</code>) "
-        "and I will fetch all linked Google profile details, user ID, reachability apps, "
-        "photos, and Google reviews!\n\n"
-        "⏳ <i>Results will automatically delete after 5 minutes for privacy.</i>\n"
-        "💡 <i>Tip: You don't need any commands. Just send a Gmail!</i>"
-    )
+    user_name = user.first_name if user and user.first_name else "User"
+    welcome_text = f"👋 <b>Hello {html.escape(user_name)}!</b>"
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
 
 
