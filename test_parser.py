@@ -10,7 +10,7 @@ if sys.stdout.encoding != 'utf-8':
 def test_formatter():
     print("Testing API fetch & parsing...")
     email = "andrinromy@gmail.com"
-    url = f"https://googleprofile-five.vercel.app/api/profile/{email}"
+    url = f"https://gmail-fetch-api-by-xeon.vercel.app/gmail?id={email}"
     
     with httpx.Client(timeout=30.0) as client:
         resp = client.get(url)

@@ -25,7 +25,7 @@ from telegram.ext import (
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-API_BASE_URL = os.getenv("API_BASE_URL", "https://googleprofile-five.vercel.app/api/profile").rstrip("/")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://gmail-fetch-api-by-xeon.vercel.app/api/profile").rstrip("/")
 
 # Configure logging
 logging.basicConfig(
