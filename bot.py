@@ -253,19 +253,18 @@ def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, 
     if last_updated:
         lines.append(f"<b>Last Updated:</b> <code>{html.escape(last_updated)}</code>")
 
-    if photo_url and photo_url.startswith("http"):
-        lines.append(f"\n<b>Profile Photo:</b> {photo_url}")
-    if reviews_url:
-        lines.append(f"<b>Google Reviews:</b> {reviews_url}")
-
     lines.append("\n⏳ <i>This message will auto-delete in 5 minutes.</i>")
 
-    # Inline Buttons
+    # Inline Buttons for Profile Photo and Google Reviews
     buttons = []
-    if reviews_url:
-        buttons.append([InlineKeyboardButton("🗺️ Google Reviews", url=reviews_url)])
+    button_row = []
     if photo_url and photo_url.startswith("http"):
-        buttons.append([InlineKeyboardButton("🖼️ Profile Photo", url=photo_url)])
+        button_row.append(InlineKeyboardButton("🖼️ Profile Photo", url=photo_url))
+    if reviews_url:
+        button_row.append(InlineKeyboardButton("🗺️ Google Reviews", url=reviews_url))
+    
+    if button_row:
+        buttons.append(button_row)
 
     markup = InlineKeyboardMarkup(buttons) if buttons else None
     final_caption = "\n".join(lines)
