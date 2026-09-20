@@ -124,7 +124,7 @@ def extract_names(profile: dict, email_query: str, raw_name: str | None = None) 
 
 
 def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
-    """Parse JSON response and format into human-readable HTML message."""
+    """Parse JSON response and format into human-readable message matching exact user specification."""
     if not isinstance(data, dict):
         return (
             f"❌ <b>Invalid response received for:</b> <code>{html.escape(email_query)}</code>",
@@ -152,114 +152,118 @@ def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, 
                 None,
             )
 
+    summary = data.get("summary") or {}
     profile_container = data.get("PROFILE_CONTAINER") or {}
     profile = profile_container.get("profile") or {}
-    maps = data.get("maps") or {}
-    play_games = data.get("play_games")
-    calendar = data.get("calendar")
 
-    # New flat API schema fields
-    gaia_id = str(data.get("gaia_id") or profile.get("personId") or "").strip()
-    raw_name = data.get("name")
-    photo_url = data.get("profile_pic_url") or (profile.get("profilePhotos") or {}).get("PROFILE", {}).get("url")
-    email_val = data.get("email") or ((profile.get("emails") or {}).get("PROFILE") or {}).get("value") or email_query
+    # Extract fields with fallback across flat keys, summary, and nested schema
+    email_val = (
+        data.get("email")
+        or summary.get("email")
+        or ((profile.get("emails") or {}).get("PROFILE") or {}).get("value")
+        or email_query
+    )
 
-    if not gaia_id and not photo_url and not profile and not maps and not play_games and not calendar and not raw_name:
+    raw_name = data.get("name") or summary.get("name")
+    full_name, first_name, last_name, inferred_name = extract_names(profile, email_query, raw_name=raw_name)
+    final_name = full_name if full_name else inferred_name
+
+    person_id = str(
+        data.get("person_id")
+        or data.get("gaia_id")
+        or summary.get("person_id")
+        or summary.get("gaia_id")
+        or profile.get("personId")
+        or ""
+    ).strip()
+
+    # User Type
+    user_types = (
+        summary.get("user_type")
+        or ((profile.get("profileInfos") or {}).get("PROFILE") or {}).get("userTypes")
+        or data.get("user_type")
+    )
+    if isinstance(user_types, list):
+        user_type_str = ", ".join(user_types)
+    else:
+        user_type_str = str(user_types) if user_types else "GOOGLE_USER"
+
+    # Apps
+    apps_list = (
+        summary.get("apps")
+        or ((profile.get("inAppReachability") or {}).get("PROFILE") or {}).get("apps")
+        or data.get("apps")
+        or []
+    )
+    apps_str = ", ".join(apps_list) if isinstance(apps_list, list) and apps_list else (str(apps_list) if apps_list else "None")
+
+    # Presence & Enterprise
+    ext_data = profile.get("extendedData") or {}
+    dynamite = ext_data.get("dynamiteData") or {}
+    presence = summary.get("presence") or dynamite.get("presence") or "UNKNOWN"
+
+    gplus = ext_data.get("gplusData") or {}
+    is_enterprise = summary.get("enterprise")
+    if is_enterprise is None:
+        is_enterprise = "Yes" if gplus.get("isEntrepriseUser", False) else "No"
+
+    # Last Updated
+    source_ids = (profile.get("sourceIds") or {}).get("PROFILE") or {}
+    last_updated = (
+        summary.get("last_updated")
+        or data.get("last_updated")
+        or source_ids.get("lastUpdated")
+        or ""
+    )
+
+    # Photo URL & Reviews URL
+    photo_url = (
+        data.get("profile_photo")
+        or data.get("profile_pic_url")
+        or summary.get("profile_photo")
+        or summary.get("profile_pic_url")
+        or ((profile.get("profilePhotos") or {}).get("PROFILE") or {}).get("url")
+    )
+
+    reviews_url = (
+        summary.get("google_reviews")
+        or data.get("google_reviews")
+        or (f"https://www.google.com/maps/contrib/{person_id}" if person_id else "")
+    )
+
+    if not person_id and not photo_url and not profile and not raw_name:
         return (
             f"❌ <b>No profile information found for:</b> <code>{html.escape(email_query)}</code>",
             None,
             None,
         )
 
-    # Extract Names
-    full_name, first_name, last_name, inferred_name = extract_names(profile, email_query, raw_name=raw_name)
-
-    # Construct formatted message
+    # Construct exact layout requested
     lines = [
-        f"🎯 <b>Google Profile Intel:</b> <code>{html.escape(email_val)}</code>\n",
+        "<b>GOOGLE ACCOUNT INFO</b>",
+        f"<b>Name:</b> {html.escape(final_name)}",
+        f"<b>Email:</b> {html.escape(email_val)}",
     ]
-
-    if full_name:
-        lines.append(f"👤 <b>Name:</b> <b>{html.escape(full_name)}</b>")
-        if first_name or last_name:
-            lines.append(f"▫️ <b>First / Last:</b> {html.escape(first_name or '-')} / {html.escape(last_name or '-')}")
-    else:
-        lines.append(f"👤 <b>Name:</b> <i>Not set / Hidden on Google</i> (Inferred: <b>{html.escape(inferred_name)}</b>)")
-
-    if gaia_id:
-        lines.append(f"🆔 <b>GAIA / Person ID:</b> <code>{html.escape(gaia_id)}</code>")
-
-    # Profile infos if present (from extended schema)
-    profile_infos = (profile.get("profileInfos") or {}).get("PROFILE") or {}
-    user_types = profile_infos.get("userTypes") or []
-    if user_types:
-        extended = profile.get("extendedData") or {}
-        dynamite = extended.get("dynamiteData") or {}
-        entity_type = dynamite.get("entityType") or "PERSON"
-        lines.append(f"🏷️ <b>User Type:</b> {html.escape(', '.join(user_types))} ({html.escape(entity_type)})")
-
-    # Reachability if present
-    reachability = (profile.get("inAppReachability") or {}).get("PROFILE") or {}
-    apps = reachability.get("apps") or []
-    if apps:
-        apps_str = ", ".join(f"<code>{html.escape(app)}</code>" for app in apps)
-        lines.append(f"📱 <b>Linked Apps:</b> {apps_str}")
-
-    # Timestamps if present
-    source_ids = (profile.get("sourceIds") or {}).get("PROFILE") or {}
-    last_updated = source_ids.get("lastUpdated")
+    if person_id:
+        lines.append(f"<b>Person ID:</b> <code>{html.escape(person_id)}</code>")
+    lines.append(f"<b>User Type:</b> {html.escape(user_type_str)}")
+    lines.append(f"<b>Apps:</b> {html.escape(apps_str)}")
+    lines.append(f"<b>Presence:</b> {html.escape(presence)}")
+    lines.append(f"<b>Enterprise:</b> {html.escape(str(is_enterprise))}")
     if last_updated:
-        lines.append(f"🕒 <b>Last Updated:</b> <code>{html.escape(last_updated)}</code>")
+        lines.append(f"<b>Last Updated:</b> <code>{html.escape(last_updated)}</code>")
 
-    # Google Maps & Reviews
-    maps_contrib_url = f"https://www.google.com/maps/contrib/{gaia_id}" if gaia_id else None
-    reviews_data = maps.get("reviews")
-    stats_data = maps.get("stats") or {}
-    photos_data = maps.get("photos")
+    if photo_url and photo_url.startswith("http"):
+        lines.append(f"\n<b>Profile Photo:</b> {photo_url}")
+    if reviews_url:
+        lines.append(f"<b>Google Reviews:</b> {reviews_url}")
 
-    if reviews_data or stats_data or photos_data:
-        lines.append("\n🗺️ <b>Google Maps & Reviews:</b>")
-        if stats_data:
-            stats_list = [f"{k.capitalize()}: {v}" for k, v in stats_data.items()]
-            lines.append(f"📊 <b>Stats:</b> {', '.join(stats_list)}")
-
-        if reviews_data:
-            if isinstance(reviews_data, list):
-                lines.append(f"⭐ <b>Reviews ({len(reviews_data)}):</b>")
-                for rev in reviews_data[:5]:
-                    if isinstance(rev, dict):
-                        place = rev.get("placeName") or rev.get("title") or "Place"
-                        rating = rev.get("rating") or "N/A"
-                        comment = rev.get("comment") or rev.get("snippet") or ""
-                        lines.append(f" • <b>{html.escape(str(place))}</b> (Rating: {rating}⭐)")
-                        if comment:
-                            lines.append(f"   <i>\"{html.escape(comment[:120])}...\"</i>")
-                    else:
-                        lines.append(f" • {html.escape(str(rev)[:100])}")
-            elif isinstance(reviews_data, dict):
-                lines.append(f"⭐ <b>Reviews:</b> {html.escape(str(reviews_data)[:200])}")
-
-        if photos_data:
-            if isinstance(photos_data, list):
-                lines.append(f"📸 <b>Maps Photos:</b> {len(photos_data)} photo(s) uploaded")
-            else:
-                lines.append("📸 <b>Maps Photos:</b> Available")
-
-    # Play Games
-    if play_games:
-        lines.append(f"\n🎮 <b>Play Games:</b> {html.escape(str(play_games))}")
-
-    # Calendar
-    if calendar:
-        lines.append(f"\n📅 <b>Calendar:</b> {html.escape(str(calendar))}")
-
-    # Add auto-delete notification
     lines.append("\n⏳ <i>This message will auto-delete in 5 minutes.</i>")
 
-    # Inline Buttons: Google Maps Reviews and Profile Photo
+    # Inline Buttons
     buttons = []
-    if maps_contrib_url:
-        buttons.append([InlineKeyboardButton("🗺️ Google Maps Reviews", url=maps_contrib_url)])
+    if reviews_url:
+        buttons.append([InlineKeyboardButton("🗺️ Google Reviews", url=reviews_url)])
     if photo_url and photo_url.startswith("http"):
         buttons.append([InlineKeyboardButton("🖼️ Profile Photo", url=photo_url)])
 
@@ -267,6 +271,7 @@ def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, 
     final_caption = "\n".join(lines)
 
     return final_caption, photo_url, markup
+
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
