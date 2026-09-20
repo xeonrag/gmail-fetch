@@ -38,16 +38,33 @@ logger = logging.getLogger(__name__)
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 AUTO_DELETE_DELAY = 300  # 5 minutes in seconds
 
+# Prevent background asyncio tasks from being garbage collected in Python 3.12+
+BACKGROUND_TASKS: set[asyncio.Task] = set()
 
-async def schedule_auto_delete(chat_id: int, message_ids: list[int], delay: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+def run_background_task(coro) -> asyncio.Task:
+    """Run an async coroutine in background while maintaining a strong reference."""
+    task = asyncio.create_task(coro)
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+    return task
+
+
+async def schedule_auto_delete(chat_id: int, message_ids: list[int], delay: int, bot) -> None:
     """Delete specified messages after delay seconds."""
-    await asyncio.sleep(delay)
-    for msg_id in message_ids:
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            logger.info(f"Auto-deleted message {msg_id} in chat {chat_id}")
-        except Exception as e:
-            logger.debug(f"Could not delete message {msg_id}: {e}")
+    try:
+        logger.info(f"Scheduled auto-deletion of messages {message_ids} in chat {chat_id} in {delay}s")
+        await asyncio.sleep(delay)
+        for msg_id in message_ids:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                logger.info(f"Auto-deleted message {msg_id} in chat {chat_id}")
+            except Exception as e:
+                logger.warning(f"Could not auto-delete message {msg_id} in chat {chat_id}: {e}")
+    except asyncio.CancelledError:
+        logger.info(f"Auto-delete task for chat {chat_id} was cancelled.")
+    except Exception as e:
+        logger.error(f"Error in auto_delete for chat {chat_id}: {e}", exc_info=True)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -280,17 +297,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             resp = await client.get(target_url)
             
             if resp.status_code == 404:
-                await status_msg.edit_text(
+                err_msg = await status_msg.edit_text(
                     f"❌ <b>Target Account Not Found:</b> <code>{html.escape(target_email)}</code>\n"
                     "<i>This Google account does not exist or has strict privacy settings enabled.</i>",
                     parse_mode=ParseMode.HTML,
                 )
+                run_background_task(schedule_auto_delete(
+                    chat_id=update.effective_chat.id,
+                    message_ids=[user_msg_id, err_msg.message_id],
+                    delay=AUTO_DELETE_DELAY,
+                    bot=context.bot,
+                ))
                 return
             elif resp.status_code != 200:
-                await status_msg.edit_text(
+                err_msg = await status_msg.edit_text(
                     f"⚠️ <b>API Error ({resp.status_code}):</b> Unable to retrieve data for <code>{html.escape(target_email)}</code>.",
                     parse_mode=ParseMode.HTML,
                 )
+                run_background_task(schedule_auto_delete(
+                    chat_id=update.effective_chat.id,
+                    message_ids=[user_msg_id, err_msg.message_id],
+                    delay=AUTO_DELETE_DELAY,
+                    bot=context.bot,
+                ))
                 return
 
             data = resp.json()
@@ -344,24 +373,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Schedule automatic deletion of query and response after 5 minutes (300s)
         if sent_msg_ids:
-            asyncio.create_task(schedule_auto_delete(
+            run_background_task(schedule_auto_delete(
                 chat_id=update.effective_chat.id,
                 message_ids=[user_msg_id] + sent_msg_ids,
                 delay=AUTO_DELETE_DELAY,
-                context=context,
+                bot=context.bot,
             ))
 
     except httpx.TimeoutException:
-        await status_msg.edit_text(
+        err_msg = await status_msg.edit_text(
             "⏱️ <b>Request Timeout:</b> The API server took too long to respond. Please try again in a moment.",
             parse_mode=ParseMode.HTML,
         )
+        run_background_task(schedule_auto_delete(
+            chat_id=update.effective_chat.id,
+            message_ids=[user_msg_id, err_msg.message_id],
+            delay=AUTO_DELETE_DELAY,
+            bot=context.bot,
+        ))
     except Exception as e:
         logger.error(f"Error handling request: {e}", exc_info=True)
-        await status_msg.edit_text(
+        err_msg = await status_msg.edit_text(
             f"❌ <b>Error occurred:</b> <code>{html.escape(str(e))}</code>",
             parse_mode=ParseMode.HTML,
         )
+        run_background_task(schedule_auto_delete(
+            chat_id=update.effective_chat.id,
+            message_ids=[user_msg_id, err_msg.message_id],
+            delay=AUTO_DELETE_DELAY,
+            bot=context.bot,
+        ))
 
 
 import threading
