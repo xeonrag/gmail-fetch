@@ -25,7 +25,7 @@ from telegram.ext import (
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-API_BASE_URL = "https://fetch-ykhk.onrender.com/gmail"
+API_BASE_URL = os.getenv("API_BASE_URL", "https://googleprofile-five.vercel.app/api/profile").rstrip("/")
 
 # Configure logging
 logging.basicConfig(
@@ -76,15 +76,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
-def extract_names(profile: dict, email_query: str) -> tuple[str, str, str, str]:
+def extract_names(profile: dict, email_query: str, raw_name: str | None = None) -> tuple[str, str, str, str]:
     """Extract full name, first name, last name, and an intelligent handle fallback."""
     names_dict = profile.get("names") or {}
     
-    full_name = ""
+    full_name = (raw_name or "").strip()
     first_name = ""
     last_name = ""
 
-    # Search through all name sources (PROFILE, CONTACT, etc.)
+    # Search through all name sources (PROFILE, CONTACT, etc.) if available
     for source, n_data in names_dict.items():
         if isinstance(n_data, dict):
             if not full_name:
@@ -108,10 +108,26 @@ def extract_names(profile: dict, email_query: str) -> tuple[str, str, str, str]:
 
 def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, InlineKeyboardMarkup | None]:
     """Parse JSON response and format into human-readable HTML message."""
-    # Check if API returned an error/not found in detail
+    if not isinstance(data, dict):
+        return (
+            f"❌ <b>Invalid response received for:</b> <code>{html.escape(email_query)}</code>",
+            None,
+            None,
+        )
+
+    # Check if API returned an error or account not found
+    if "error" in data:
+        err_msg = data.get("error", "")
+        return (
+            f"❌ <b>Target Account Not Found:</b> <code>{html.escape(email_query)}</code>\n"
+            f"<i>{html.escape(str(err_msg)) if err_msg else 'This Google account does not exist or has strict privacy settings enabled.'}</i>",
+            None,
+            None,
+        )
+
     if "detail" in data:
-        detail_msg = data.get("detail", "")
-        if "The target wasn't found" in detail_msg:
+        detail_msg = str(data.get("detail", ""))
+        if "wasn't found" in detail_msg.lower() or "not found" in detail_msg.lower():
             return (
                 f"❌ <b>Target Account Not Found:</b> <code>{html.escape(email_query)}</code>\n"
                 "<i>This Google account does not exist or has strict privacy settings enabled.</i>",
@@ -125,47 +141,21 @@ def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, 
     play_games = data.get("play_games")
     calendar = data.get("calendar")
 
-    if not profile and not maps and not play_games and not calendar:
+    # New flat API schema fields
+    gaia_id = str(data.get("gaia_id") or profile.get("personId") or "").strip()
+    raw_name = data.get("name")
+    photo_url = data.get("profile_pic_url") or (profile.get("profilePhotos") or {}).get("PROFILE", {}).get("url")
+    email_val = data.get("email") or ((profile.get("emails") or {}).get("PROFILE") or {}).get("value") or email_query
+
+    if not gaia_id and not photo_url and not profile and not maps and not play_games and not calendar and not raw_name:
         return (
             f"❌ <b>No profile information found for:</b> <code>{html.escape(email_query)}</code>",
             None,
             None,
         )
 
-    # Basic Info
-    person_id = profile.get("personId") or "N/A"
-    
     # Extract Names
-    full_name, first_name, last_name, inferred_name = extract_names(profile, email_query)
-
-    # Emails
-    emails_obj = (profile.get("emails") or {}).get("PROFILE") or {}
-    email_val = emails_obj.get("value") or email_query
-
-    # Profile infos
-    profile_infos = (profile.get("profileInfos") or {}).get("PROFILE") or {}
-    user_types = profile_infos.get("userTypes") or []
-    user_type_str = ", ".join(user_types) if user_types else "Standard User"
-
-    # In-app reachability
-    reachability = (profile.get("inAppReachability") or {}).get("PROFILE") or {}
-    apps = reachability.get("apps") or []
-    apps_str = ", ".join(f"<code>{html.escape(app)}</code>" for app in apps) if apps else "None detected"
-
-    # Timestamps
-    source_ids = (profile.get("sourceIds") or {}).get("PROFILE") or {}
-    last_updated = source_ids.get("lastUpdated") or "N/A"
-
-    # Extended data
-    extended = profile.get("extendedData") or {}
-    dynamite = extended.get("dynamiteData") or {}
-    entity_type = dynamite.get("entityType") or "PERSON"
-    presence = dynamite.get("presence") or "UNKNOWN"
-    dnd_state = dynamite.get("dndState") or "AVAILABLE"
-
-    # Photos
-    profile_photos = (profile.get("profilePhotos") or {}).get("PROFILE") or {}
-    photo_url = profile_photos.get("url")
+    full_name, first_name, last_name, inferred_name = extract_names(profile, email_query, raw_name=raw_name)
 
     # Construct formatted message
     lines = [
@@ -179,48 +169,64 @@ def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, 
     else:
         lines.append(f"👤 <b>Name:</b> <i>Not set / Hidden on Google</i> (Inferred: <b>{html.escape(inferred_name)}</b>)")
 
-    lines.extend([
-        f"🆔 <b>Person ID:</b> <code>{html.escape(person_id)}</code>",
-        f"🏷️ <b>User Type:</b> {html.escape(user_type_str)} ({html.escape(entity_type)})",
-        f"🔔 <b>Presence:</b> {html.escape(presence)} | {html.escape(dnd_state)}",
-        f"🕒 <b>Last Updated:</b> <code>{html.escape(last_updated)}</code>",
-        f"📱 <b>Linked Apps:</b> {apps_str}",
-    ])
+    if gaia_id:
+        lines.append(f"🆔 <b>GAIA / Person ID:</b> <code>{html.escape(gaia_id)}</code>")
+
+    # Profile infos if present (from extended schema)
+    profile_infos = (profile.get("profileInfos") or {}).get("PROFILE") or {}
+    user_types = profile_infos.get("userTypes") or []
+    if user_types:
+        extended = profile.get("extendedData") or {}
+        dynamite = extended.get("dynamiteData") or {}
+        entity_type = dynamite.get("entityType") or "PERSON"
+        lines.append(f"🏷️ <b>User Type:</b> {html.escape(', '.join(user_types))} ({html.escape(entity_type)})")
+
+    # Reachability if present
+    reachability = (profile.get("inAppReachability") or {}).get("PROFILE") or {}
+    apps = reachability.get("apps") or []
+    if apps:
+        apps_str = ", ".join(f"<code>{html.escape(app)}</code>" for app in apps)
+        lines.append(f"📱 <b>Linked Apps:</b> {apps_str}")
+
+    # Timestamps if present
+    source_ids = (profile.get("sourceIds") or {}).get("PROFILE") or {}
+    last_updated = source_ids.get("lastUpdated")
+    if last_updated:
+        lines.append(f"🕒 <b>Last Updated:</b> <code>{html.escape(last_updated)}</code>")
 
     # Google Maps & Reviews
+    maps_contrib_url = f"https://www.google.com/maps/contrib/{gaia_id}" if gaia_id else None
     reviews_data = maps.get("reviews")
     stats_data = maps.get("stats") or {}
     photos_data = maps.get("photos")
-    maps_contrib_url = f"https://www.google.com/maps/contrib/{person_id}" if person_id and person_id != "N/A" else None
 
-    lines.append("\n🗺️ <b>Google Maps & Reviews:</b>")
-    if stats_data:
-        stats_list = [f"{k.capitalize()}: {v}" for k, v in stats_data.items()]
-        lines.append(f"📊 <b>Stats:</b> {', '.join(stats_list)}")
+    if reviews_data or stats_data or photos_data:
+        lines.append("\n🗺️ <b>Google Maps & Reviews:</b>")
+        if stats_data:
+            stats_list = [f"{k.capitalize()}: {v}" for k, v in stats_data.items()]
+            lines.append(f"📊 <b>Stats:</b> {', '.join(stats_list)}")
 
-    if reviews_data:
-        if isinstance(reviews_data, list):
-            lines.append(f"⭐ <b>Reviews ({len(reviews_data)}):</b>")
-            for rev in reviews_data[:5]:
-                if isinstance(rev, dict):
-                    place = rev.get("placeName") or rev.get("title") or "Place"
-                    rating = rev.get("rating") or "N/A"
-                    comment = rev.get("comment") or rev.get("snippet") or ""
-                    lines.append(f" • <b>{html.escape(str(place))}</b> (Rating: {rating}⭐)")
-                    if comment:
-                        lines.append(f"   <i>\"{html.escape(comment[:120])}...\"</i>")
-                else:
-                    lines.append(f" • {html.escape(str(rev)[:100])}")
-        elif isinstance(reviews_data, dict):
-            lines.append(f"⭐ <b>Reviews:</b> {html.escape(str(reviews_data)[:200])}")
-    else:
-        lines.append("⭐ <i>No public Google Maps reviews found.</i>")
+        if reviews_data:
+            if isinstance(reviews_data, list):
+                lines.append(f"⭐ <b>Reviews ({len(reviews_data)}):</b>")
+                for rev in reviews_data[:5]:
+                    if isinstance(rev, dict):
+                        place = rev.get("placeName") or rev.get("title") or "Place"
+                        rating = rev.get("rating") or "N/A"
+                        comment = rev.get("comment") or rev.get("snippet") or ""
+                        lines.append(f" • <b>{html.escape(str(place))}</b> (Rating: {rating}⭐)")
+                        if comment:
+                            lines.append(f"   <i>\"{html.escape(comment[:120])}...\"</i>")
+                    else:
+                        lines.append(f" • {html.escape(str(rev)[:100])}")
+            elif isinstance(reviews_data, dict):
+                lines.append(f"⭐ <b>Reviews:</b> {html.escape(str(reviews_data)[:200])}")
 
-    if photos_data:
-        if isinstance(photos_data, list):
-            lines.append(f"📸 <b>Maps Photos:</b> {len(photos_data)} photo(s) uploaded")
-        else:
-            lines.append("📸 <b>Maps Photos:</b> Available")
+        if photos_data:
+            if isinstance(photos_data, list):
+                lines.append(f"📸 <b>Maps Photos:</b> {len(photos_data)} photo(s) uploaded")
+            else:
+                lines.append("📸 <b>Maps Photos:</b> Available")
 
     # Play Games
     if play_games:
@@ -233,7 +239,7 @@ def format_profile_data(data: dict, email_query: str) -> tuple[str, str | None, 
     # Add auto-delete notification
     lines.append("\n⏳ <i>This message will auto-delete in 5 minutes.</i>")
 
-    # Inline Buttons: Only Google Maps Reviews and Profile Photo
+    # Inline Buttons: Google Maps Reviews and Profile Photo
     buttons = []
     if maps_contrib_url:
         buttons.append([InlineKeyboardButton("🗺️ Google Maps Reviews", url=maps_contrib_url)])
@@ -269,10 +275,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     try:
+        target_url = f"{API_BASE_URL}/{target_email}"
         async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.get(API_BASE_URL, params={"id": target_email})
+            resp = await client.get(target_url)
             
-            if resp.status_code != 200:
+            if resp.status_code == 404:
+                await status_msg.edit_text(
+                    f"❌ <b>Target Account Not Found:</b> <code>{html.escape(target_email)}</code>\n"
+                    "<i>This Google account does not exist or has strict privacy settings enabled.</i>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            elif resp.status_code != 200:
                 await status_msg.edit_text(
                     f"⚠️ <b>API Error ({resp.status_code}):</b> Unable to retrieve data for <code>{html.escape(target_email)}</code>.",
                     parse_mode=ParseMode.HTML,
@@ -381,12 +395,12 @@ def start_health_server():
 
 
 async def keep_alive_ping():
-    """Periodically ping API to keep Render instance awake."""
+    """Periodically ping API to keep instance awake."""
     while True:
         try:
             await asyncio.sleep(600)  # Ping every 10 minutes
             async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get("https://fetch-ykhk.onrender.com/")
+                r = await client.get("https://googleprofile-five.vercel.app/")
                 logger.info(f"Keep-alive ping sent to API (Status: {r.status_code})")
         except Exception as e:
             logger.debug(f"Keep-alive ping error: {e}")
@@ -413,7 +427,7 @@ def main():
         async def job_keep_alive(ctx):
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    await client.get("https://fetch-ykhk.onrender.com/")
+                    await client.get("https://googleprofile-five.vercel.app/")
             except Exception:
                 pass
         app.job_queue.run_repeating(job_keep_alive, interval=600, first=60)
